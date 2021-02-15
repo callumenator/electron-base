@@ -1,9 +1,12 @@
 import os
 from typing import Any, Dict
 
+from PyQt5 import QtGui
+from PyQt5.QtCore import QEvent
 from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QWidget, QPushButton, QTextEdit, QSplitter, QLineEdit, \
-    QCompleter
+    QCompleter, QVBoxLayout
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtCore import QFileSystemWatcher, QRect, QAbstractItemModel, QAbstractListModel, QModelIndex, \
@@ -13,29 +16,28 @@ from PyQt5.QtCore import QObject, pyqtSlot, QUrl, QVariant
 
 import os
 
+from PyQt5.QtWidgets import QDialog
+from PyQt5.QtWidgets import QSizePolicy
+
 
 class CallHandler(QObject):
 
-    @pyqtSlot(result=QVariant)
-    def test(self):
-        print('call received')
-        return QVariant({"abc": "def", "ab": 22})
-
-    # take an argument from javascript - JS:  handler.test1('hello!')
-    @pyqtSlot(QVariant, result=QVariant)
-    def test1(self, args):
-        print('i got')
-        print(args)
-        return "ok"
+    def __init__(self, app):
+        self.app = app
+        super().__init__()
 
 
 class WebView(QWebEngineView):
 
-    def __init__(self, page=None, url=None, dev_tools=None, parent=None):
+    def __init__(self, page=None, url=None, dev_tools=None, parent=None, handler=None):
         super().__init__(parent=parent)
-        self.channel = QWebChannel()
-        self.handler = CallHandler()
-        self.channel.registerObject('handler', self.handler)
+
+        # Expose python callables inside the page
+        if handler:
+            self.channel = QWebChannel()
+            self.channel.registerObject('handler', handler)
+            self.page().setWebChannel(self.channel)
+
         if page:
             self.load(QUrl.fromLocalFile(page))
         if url:
@@ -43,107 +45,82 @@ class WebView(QWebEngineView):
         if dev_tools:
             self.page().setDevToolsPage(dev_tools)
 
-
-class CompletionModel(QAbstractListModel):
-
-    def headerData(self, section: int, orientation, role) -> Any:
-        return ['Thing']
-
-    def rowCount(self, parent: QModelIndex = ...) -> int:
-        return 4
-
-    def data(self, index: QModelIndex, role: int):
-        result = [
-            'one',
-            'two',
-            'three',
-            'four'
-        ][index.row()]
-        if role == Qt.EditRole:
-            return result
-        if role == Qt.DisplayRole:
-            return result.upper()
-        # if role == Qt.SizeHintRole:
-        #     return QSize(100, 20)
-        return QVariant()
+        self.mouseDragStart = None
+        self.mouseDragStop = None
+        self.mouseDragTracking = False
 
 
-class CustomCompleter(QCompleter):
-    def splitPath(self, path: str):
-        p = [path.split(' ')[-1]]
-        return p
+class WebViewCallHandler(QObject):
+
+    receive = pyqtSignal()
+
+    def __init__(self, handler):
+        super().__init__()
+        self.handler = handler
+
+    @pyqtSlot(QVariant, result=QVariant)
+    def send(self, arg):
+        return self.handler(arg)
 
 
 class MainWidget(QWidget):
+
     def __init__(self):
         super().__init__()
+        self.webview_handler = WebViewCallHandler(self.on_webview_message)
+
         self.setGeometry(QRect(0, 0, 1000, 800))
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         self.setLayout(layout)
 
-        # dev_tools = WebView()
+        dev_tools = WebView()
         browser = WebView(
-            page=os.path.abspath(os.path.join(os.path.dirname(__file__), "index.html")),
-            # dev_tools=dev_tools.page(),
+            url='http://localhost:8080/',
+            dev_tools=dev_tools.page(),
+            handler=self.webview_handler,
         )
-        layout.addWidget(browser)
+        self.webviews = [browser]
 
-        self.line = QLineEdit()
-        self.line.setGeometry(QRect(0, 0, 100, 100))
-
-        self.model = QStringListModel()
-        completions = {
-            'commands': {
-                'one': {
-                    'commands': {
-                        'foo': {},
-                        'bar': {},
-                    },
-                },
-                'two': {
-                    'commands': {
-                        'baz': {},
-                        'car': {},
-                    },
-                },
-                'three': {
-                    'commands': {
-                        'caz': {},
-                        'dar': {},
-                    }
-                },
-                'four': {
-                    'commands': {
-                        'dax': {},
-                        'far': {},
-                    }
-                },
-            },
-        }
-
-        def update_completions():
-            tokens = self.line.text().split(' ')
-            available = completions.get('commands')
-            while tokens:
-                _available = available.get(tokens.pop(0), {}).get('commands', {})
-                if not _available:
-                    break
-                available = _available
-
-            if available:
-                self.model.setStringList(list(available.keys()))
-
-        update_completions()
-        self.line.textChanged.connect(update_completions)
-
-        self.completions = CustomCompleter()
-        self.completions.setModel(self.model)
-        self.line.setCompleter(self.completions)
-
-        self.completions.setWidget(self.line)
-        layout.addWidget(self.line)
+        self.splitter = QSplitter(self)
+        self.splitter.setHandleWidth(1)
+        self.splitter.addWidget(browser)
+        self.splitter.addWidget(dev_tools)
+        layout.addWidget(self.splitter)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # layout.addWidget(browser)
+        # layout.addWidget(dev_tools)
 
         self.show()
+
+    def add_webview(self):
+        self.webviews.append(
+            WebView(
+                page=os.path.abspath(os.path.join(os.path.dirname(__file__), "index.html")),
+                handler=self.webview_handler,
+            )
+        )
+        self.splitter.addWidget(self.webviews[-1])
+
+    def on_webview_message(self, argument: QVariant):
+        self.add_webview()
+        return QVariant({'response': 'hello'})
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        # NOTE: on mac, the command key produces control modifier, control key produces meta modifier
+        key = event.key()
+        modifiers = int(event.modifiers())
+        if modifiers and modifiers & Qt.CTRL and key == Qt.Key_T:
+            self.open_command_window()
+
+    def open_command_window(self):
+        dlg = QDialog(self)
+        dlg.setWindowFlags(Qt.FramelessWindowHint)
+        layout = QVBoxLayout()
+        dlg.setLayout(layout)
+        geom = self.geometry()
+        modal_width = geom.width() * .8
+        dlg.setGeometry(geom.width() / 2 - modal_width / 2, geom.y(), modal_width, 300)
+        dlg.show()
 
 
 def apply_theme():
