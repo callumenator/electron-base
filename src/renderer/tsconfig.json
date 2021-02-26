@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "jsx": "react",
+    "module": "esnext",
+    "allowSyntheticDefaultImports": true,
+    "noImplicitAny": true,
+    "sourceMap": true,
+    "target": "es5",
+    "lib": ["dom", "esnext"]
+  },
+  "exclude": [
+    "node_modules"
+  ]
+}
